@@ -2,6 +2,7 @@ package com.example.cynos_kotlin
 
 import android.app.Application
 import android.content.Context
+import android.Manifest
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
