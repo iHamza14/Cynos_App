@@ -29,7 +29,23 @@ import com.google.android.gms.location.Priority
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import androidx.lifecycle.viewModelScope
+import android.net.Uri
+import androidx.core.content.FileProvider
+import java.io.File
+import java.io.FileWriter
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import android.location.GnssStatus
+import android.location.LocationManager
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import kotlin.math.hypot
+import kotlin.math.PI
 
 data class SensorData(
     val x: Float = 0f,
@@ -106,6 +122,7 @@ class SensorViewModel(
     private val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
     private val gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
     private val magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+    private val gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
 
     /** Sensor callbacks + ONNX inference + matching. Never the main thread. */
     private val sensorThread = HandlerThread("cynos-imu").apply { start() }
@@ -140,6 +157,29 @@ class SensorViewModel(
 
     private val _drState = MutableStateFlow(DrState())
     val drState: StateFlow<DrState> = _drState.asStateFlow()
+
+    private val _gravityData = MutableStateFlow(SensorData())
+    val gravityData: StateFlow<SensorData> = _gravityData.asStateFlow()
+
+    private val _satelliteCount = MutableStateFlow(0)
+    val satelliteCount: StateFlow<Int> = _satelliteCount.asStateFlow()
+
+    private val _isRecording = MutableStateFlow(false)
+    val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
+
+    private var recordingJob: Job? = null
+    private var csvFile: File? = null
+    private var startTimeMillis: Long = 0
+
+    private val locationManager by lazy {
+        getApplication<Application>().getSystemService(Context.LOCATION_SERVICE) as LocationManager
+    }
+
+    private val gnssStatusCallback = object : GnssStatus.Callback() {
+        override fun onSatelliteStatusChanged(status: GnssStatus) {
+            _satelliteCount.value = status.satelliteCount
+        }
+    }
 
     private val _locationPermissionGranted = MutableStateFlow(false)
     val locationPermissionGranted: StateFlow<Boolean> = _locationPermissionGranted.asStateFlow()
@@ -372,6 +412,12 @@ class SensorViewModel(
             )
             Log.d(TAG, "registerListener mag -> $ok")
         }
+        gravitySensor?.let {
+            val ok = sensorManager.registerListener(
+                this, it, SensorManager.SENSOR_DELAY_UI, sensorHandler
+            )
+            Log.d(TAG, "registerListener gravity -> $ok")
+        }
     }
 
     fun startLocationUpdates() {
@@ -384,6 +430,11 @@ class SensorViewModel(
             fusedLocationClient.requestLocationUpdates(
                 request, locationCallback, Looper.getMainLooper()
             )
+            
+            if (ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                locationManager.registerGnssStatusCallback(gnssStatusCallback, null)
+            }
+            
             Log.d(TAG, "  requested, waiting for fixes")
             _locationPermissionGranted.value = true
         } catch (e: SecurityException) {
@@ -394,6 +445,7 @@ class SensorViewModel(
 
     fun stopLocationUpdates() {
         fusedLocationClient.removeLocationUpdates(locationCallback)
+        try { locationManager.unregisterGnssStatusCallback(gnssStatusCallback) } catch (e: Exception) {}
     }
 
     // -----------------------------------------------------------------
@@ -424,6 +476,12 @@ class SensorViewModel(
                 _magnetometerData.value =
                     SensorData(event.values[0], event.values[1], event.values[2])
                 System.arraycopy(event.values, 0, magneticValues, 0, 3)
+                updateOrientation()
+            }
+            
+            Sensor.TYPE_GRAVITY -> {
+                _gravityData.value = SensorData(event.values[0], event.values[1], event.values[2])
+                System.arraycopy(event.values, 0, gravityValues, 0, 3)
                 updateOrientation()
             }
         }
@@ -650,6 +708,64 @@ class SensorViewModel(
     // -----------------------------------------------------------------
     // CLEANUP
     // -----------------------------------------------------------------
+
+    fun toggleRecording(onCompleted: (Uri?) -> Unit) {
+        if (_isRecording.value) {
+            // Stop Recording
+            _isRecording.value = false
+            recordingJob?.cancel()
+            
+            val uri = csvFile?.let { 
+                FileProvider.getUriForFile(getApplication(), "${getApplication<Application>().packageName}.fileprovider", it)
+            }
+            onCompleted(uri)
+        } else {
+            // Start Recording
+            _isRecording.value = true
+            startTimeMillis = System.currentTimeMillis()
+            csvFile = File(getApplication<Application>().cacheDir, "telemetry_${startTimeMillis}.csv")
+            
+            val header = "GPS LATITUDE (degrees),GPS LONGITUDE (degrees),GPS ALTITUDE (m),GPS SPEED (Kmh),GPS ACCURACY (m),GPS ORIENTATION (°),GPS SATELLITES IN RANGE,TIME SINCE START (ms),DATE (YYYY-MO-DD HH-MI-SS_SSS),ACCELEROMETER X (m/s²),ACCELEROMETER Y (m/s²),ACCELEROMETER Z (m/s²),GRAVITY X (m/s²),GRAVITY Y (m/s²),GRAVITY Z (m/s²),GYROSCOPE Yaw (rad/s),GYROSCOPE Pitch (rad/s),GYROSCOPE Roll (rad/s),MAGNETIC FIELD X (μT),MAGNETIC FIELD Y (μT),MAGNETIC FIELD Z (μT),ORIENTATION (Yaw) (°),ORIENTATION (Pitch) (°),ORIENTATION (Roll) (°)\n"
+            
+            try {
+                FileWriter(csvFile, false).use { it.append(header) }
+            } catch (e: Exception) { e.printStackTrace() }
+            
+            val sdf = SimpleDateFormat("yyyy-MM-dd HH-mm-ss_SSS", Locale.US)
+            
+            recordingJob = viewModelScope.launch {
+                while (_isRecording.value) {
+                    val loc = _locationData.value
+                    val sat = _satelliteCount.value
+                    val acc = _accelerometerData.value
+                    val grav = _gravityData.value
+                    val gyro = _gyroscopeData.value
+                    val mag = _magnetometerData.value
+                    val ori = _orientationData.value
+                    
+                    val timeSinceStart = System.currentTimeMillis() - startTimeMillis
+                    val dateStr = sdf.format(Date())
+                    val speedKmh = (loc?.speed ?: 0f) * 3.6f
+                    
+                    val row = buildString {
+                        append("${loc?.latitude ?: ""},${loc?.longitude ?: ""},${loc?.altitude ?: ""},${speedKmh},${loc?.accuracy ?: ""},${loc?.heading ?: ""},${sat},")
+                        append("${timeSinceStart},${dateStr},")
+                        append("${acc.x},${acc.y},${acc.z},")
+                        append("${grav.x},${grav.y},${grav.z},")
+                        append("${gyro.x},${gyro.y},${gyro.z},")
+                        append("${mag.x},${mag.y},${mag.z},")
+                        append("${ori.yaw * 180 / PI},${ori.pitch * 180 / PI},${ori.roll * 180 / PI}\n")
+                    }
+                    
+                    try {
+                        FileWriter(csvFile, true).use { it.append(row) }
+                    } catch (e: Exception) { e.printStackTrace() }
+                    
+                    delay(500) // Record every 500ms
+                }
+            }
+        }
+    }
 
     override fun onCleared() {
         super.onCleared()

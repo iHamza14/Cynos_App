@@ -140,6 +140,8 @@ fun MapHomeScreen(
 ) {
     var panelOpen by remember { mutableStateOf(false) }
     var recenterTick by remember { mutableStateOf(0) }
+    val context = LocalContext.current
+    val isRecording by viewModel.isRecording.collectAsState()
 
     Box(
         modifier = Modifier
@@ -342,6 +344,27 @@ private fun ControlPanel(
             label = "Device data",
             sub = "Sensors, DR internals, timings",
             onClick = onOpenDeviceData
+        )
+
+        Spacer(Modifier.height(10.dp))
+
+        val isRecording by viewModel.isRecording.collectAsState()
+        val context = androidx.compose.ui.platform.LocalContext.current
+        PanelButton(
+            label = if (isRecording) "Stop & Share CSV" else "Record CSV",
+            sub = if (isRecording) "Recording telemetry..." else "Save data to a file",
+            onClick = {
+                viewModel.toggleRecording { uri ->
+                    if (uri != null) {
+                        val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                            type = "text/csv"
+                            putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(android.content.Intent.createChooser(shareIntent, "Share Telemetry CSV"))
+                    }
+                }
+            }
         )
 
         Spacer(Modifier.height(24.dp))
