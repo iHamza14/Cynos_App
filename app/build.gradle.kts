@@ -43,6 +43,14 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
+
+    // ONNX Runtime
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    implementation("androidx.compose.foundation:foundation")
+
+    // Fragment — required by Activity Result APIs
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
+
     implementation(libs.androidx.lifecycle.runtime.ktx)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
@@ -51,11 +59,9 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
-    
-    // Additional dependencies for Location and ViewModel Compose
+
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.5")
-    
-    // OSMDroid for offline maps
+
     implementation("org.osmdroid:osmdroid-android:6.1.18")
 }
