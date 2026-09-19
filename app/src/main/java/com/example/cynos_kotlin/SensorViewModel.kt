@@ -88,7 +88,7 @@ class SensorViewModel(
         private const val SAMPLE_PERIOD_NS = 100_000_000L   // 10 Hz
         private const val SENSOR_PERIOD_US = 20_000         // ask for ~50 Hz
         private const val DVSE_EVERY = 10                   // 1 Hz
-        private const val GNSS_STALE_NS = 3_000_000_000L    // 3 s
+        private const val GNSS_STALE_NS = 6_000_000_000L  // 6 s
         private const val ROAD_REFETCH_M = 500.0
         private const val TAG = "DR"
     }
@@ -223,14 +223,26 @@ class SensorViewModel(
     @Volatile private var snapOffsetM = 0.0
     @Volatile private var roadName = "--"
 
-    fun setSnapEnabled(enabled: Boolean) {
-        Log.d(TAG, "road snapping = $enabled")
-        snapEnabled = enabled
-        if (!enabled) {
+    /**
+     * Viterbi snapping is an outage aid, not an always-on filter: it runs only
+     * while GNSS is unavailable and switches itself off the moment a healthy
+     * fix returns. Driven automatically from [applySnapPolicy]; there is no
+     * manual toggle.
+     */
+    private fun applySnapPolicy(gnssHealthy: Boolean) {
+        val want = !gnssHealthy
+        if (want == snapEnabled) return
+
+        snapEnabled = want
+        matcher?.reset()
+
+        if (want) {
+            Log.d(TAG, "SNAP ON (GNSS lost)")
+            if (roadGraph == null && dr.anchored) fetchRoads(dr.latitude(), dr.longitude())
+        } else {
             snapped = false
-            matcher?.reset()
+            Log.d(TAG, "SNAP OFF (GNSS healthy)")
         }
-        publish()
     }
 
     /** Download the OSM road graph around the current position. */
@@ -452,6 +464,7 @@ class SensorViewModel(
         }
 
         val fresh = gnssFresh()
+        applySnapPolicy(fresh)
         vrHistory[vrIndex] = if (fresh) lastGnssSpeed else dr.velocity
         vrIndex = (vrIndex + 1) % 10
 
@@ -467,7 +480,10 @@ class SensorViewModel(
             matcher?.reset()
             Log.d(TAG, "ANCHORED at $lastGnssLat,$lastGnssLon hdg=$initialHeading")
 
-            if (snapEnabled && roadGraph == null) fetchRoads(lastGnssLat, lastGnssLon)
+            // Prefetch the graph now, while GNSS is healthy and we still have
+            // network certainty — a blackout is the worst time to discover the
+            // roads haven't been downloaded yet.
+            if (roadGraph == null) fetchRoads(lastGnssLat, lastGnssLon)
         }
 
         if (!buffer.isFull() || !onnx.isReady) {
