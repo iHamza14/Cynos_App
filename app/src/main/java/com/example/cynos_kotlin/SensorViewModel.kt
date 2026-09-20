@@ -762,7 +762,7 @@ class SensorViewModel(
                         FileWriter(csvFile, true).use { it.append(row) }
                     } catch (e: Exception) { e.printStackTrace() }
                     
-                    delay(500) // Record every 500ms
+                    delay(100) // Record every 100ms
                 }
             }
         }
