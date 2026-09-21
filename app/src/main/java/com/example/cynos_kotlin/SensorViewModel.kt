@@ -133,8 +133,11 @@ class SensorViewModel(
     private val netThread = HandlerThread("cynos-net").apply { start() }
     private val netHandler = Handler(netThread.looper)
 
+    private val windowSec = 5
+    private val windowSamples = windowSec * 10
+    
     private val onnx = OnnxRuntimeManager(application)
-    private val buffer = SensorBuffer(100)
+    private val buffer = SensorBuffer(windowSamples)
     private val dr = DeadReckoningEngine()
 
     // -----------------------------------------------------------------
@@ -203,9 +206,9 @@ class SensorViewModel(
     private var sampleCount = 0L
 
     /** Reused every tick: no allocation inside the 10 Hz loop. */
-    private val gyroWindow = Array(1) { Array(100) { FloatArray(3) } }
-    private val accWindow = Array(1) { Array(100) { FloatArray(3) } }
-    private val vrSeqTensor = Array(1) { Array(10) { FloatArray(1) } }
+    private val gyroWindow = Array(1) { Array(windowSamples) { FloatArray(3) } }
+    private val accWindow = Array(1) { Array(windowSamples) { FloatArray(3) } }
+    private val vrSeqTensor = Array(1) { Array(windowSec) { FloatArray(1) } }
     private val vrHistory = FloatArray(10)
     private var vrIndex = 0
     private var arWindowStep = 0
@@ -517,10 +520,10 @@ class SensorViewModel(
         buffer.add(ImuSample(ax, ay, az, gx, gy, gz, tsNs))
         sampleCount++
 
-        if (sampleCount <= 100 && sampleCount % 20 == 0L) {
+        if (sampleCount <= windowSamples && sampleCount % 20 == 0L) {
             Log.d(
                 TAG,
-                "buffer filling: ${buffer.getSamples().size}/100 (onnxReady=${onnx.isReady})"
+                "buffer filling: ${buffer.getSamples().size}/$windowSamples (onnxReady=${onnx.isReady})"
             )
         }
 
@@ -554,9 +557,9 @@ class SensorViewModel(
 
         // ---- 10 Hz: gyro TCN -> heading ----
         try {
-            for (i in 0 until 100) {
+            for (i in 0 until windowSamples) {
                 val s = samples[i]
-                val g = FeatureScaler.scaleGyroscope(s.gx, s.gy, s.gz)
+                val g = FeatureScaler.scaleGyroscope(s.gz, s.gx, s.gy)
                 gyroWindow[0][i][0] = g[0]
                 gyroWindow[0][i][1] = g[1]
                 gyroWindow[0][i][2] = g[2]
@@ -581,7 +584,7 @@ class SensorViewModel(
         // ---- 1 Hz: DVSE -> velocity ----
         if (sampleCount % DVSE_EVERY == 0L) {
             try {
-                for (i in 0 until 100) {
+                for (i in 0 until windowSamples) {
                     val s = samples[i]
                     val a = FeatureScaler.scaleAccelerometer(s.ax, s.ay, s.az)
                     accWindow[0][i][0] = a[0]
@@ -589,22 +592,22 @@ class SensorViewModel(
                     accWindow[0][i][2] = a[2]
                 }
                 
-                // 10-second Autoregressive Latch Logic
+                // Autoregressive Latch Logic
                 if (arWindowStep == 0) {
                     latchedV0 = if (fresh && gnssAidVelocity) lastGnssSpeed else dr.velocity
                 }
-                arWindowStep = (arWindowStep + 1) % 10
+                arWindowStep = (arWindowStep + 1) % windowSec
                 
-                // Record the last 10 predicted values
+                // Record the last predicted values
                 vrHistory[vrIndex] = dr.velocity
-                vrIndex = (vrIndex + 1) % 10
-
-                for (k in 0 until 10) {
-                    vrSeqTensor[0][k][0] = vrHistory[(vrIndex + k) % 10]
-                }
+                vrIndex = (vrIndex + 1) % windowSec
 
                 val v0 = latchedV0
                 dr.setVelocity(v0)
+
+                for (k in 0 until windowSec) {
+                    vrSeqTensor[0][k][0] = v0
+                }
 
                 val t0 = SystemClock.elapsedRealtime()
                 val deltaV = onnx.runDvseInference(accWindow, gyroWindow, vrSeqTensor, v0)

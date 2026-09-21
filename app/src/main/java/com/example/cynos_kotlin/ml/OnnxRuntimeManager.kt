@@ -103,7 +103,7 @@ class OnnxRuntimeManager(
             ).use { result ->
                 @Suppress("UNCHECKED_CAST")
                 val out = result[0].value as Array<FloatArray>
-                return out[0][out[0].size - 1]
+                return out[0][0]
             }
         } finally {
             accTensor.close()
