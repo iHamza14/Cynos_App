@@ -23,19 +23,30 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            val localProperties = Properties()
-            val localPropertiesFile = rootProject.file("local.properties")
-            if (localPropertiesFile.exists()) {
-                localProperties.load(FileInputStream(localPropertiesFile))
-            }
-            
-            storeFile = file(localProperties.getProperty("KEYSTORE_FILE") ?: "")
-            storePassword = localProperties.getProperty("KEYSTORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD")
-            keyAlias = localProperties.getProperty("KEY_ALIAS") ?: System.getenv("KEY_ALIAS")
-            keyPassword = localProperties.getProperty("KEY_PASSWORD") ?: System.getenv("KEY_PASSWORD")
+    create("release") {
+        val localProperties = Properties()
+        val localPropertiesFile = rootProject.file("local.properties")
+
+        if (localPropertiesFile.exists()) {
+            localProperties.load(FileInputStream(localPropertiesFile))
+        }
+
+        val keystorePath = localProperties.getProperty("KEYSTORE_FILE")
+
+        if (!keystorePath.isNullOrBlank()) {
+            storeFile = file(keystorePath)
+            storePassword =
+                localProperties.getProperty("KEYSTORE_PASSWORD")
+                    ?: System.getenv("KEYSTORE_PASSWORD")
+            keyAlias =
+                localProperties.getProperty("KEY_ALIAS")
+                    ?: System.getenv("KEY_ALIAS")
+            keyPassword =
+                localProperties.getProperty("KEY_PASSWORD")
+                    ?: System.getenv("KEY_PASSWORD")
         }
     }
+}
 
     buildTypes {
         release {

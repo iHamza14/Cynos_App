@@ -220,14 +220,14 @@ fun MapHomeScreen(
                 HorizontalDivider(color = STROKE)
                 Spacer(Modifier.height(12.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    LegendChip(ACCENT_BLUE, "GNSS")
-                    LegendChip(ACCENT_AMBER, "Dead reckoning")
-                    LegendChip(ACCENT_GREEN, "Viterbi", dim = !drState.snapped)
-                }
+                // Row(
+                //     modifier = Modifier.fillMaxWidth(),
+                //     horizontalArrangement = Arrangement.spacedBy(16.dp)
+                // ) {
+                //     LegendChip(ACCENT_BLUE, "GNSS")
+                //     LegendChip(ACCENT_AMBER, "Dead reckoning")
+                //     LegendChip(ACCENT_GREEN, "Viterbi", dim = !drState.snapped)
+                // }
             }
         }
 

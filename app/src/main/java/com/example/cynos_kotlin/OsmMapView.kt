@@ -29,9 +29,8 @@ import kotlin.math.pow
 private const val STADIA_API_KEY = "0809d2df-bb7d-43b0-a6ba-918cdaf2af80"
 
 /** Marker colours, shared with the legend in MainActivity. */
-val COLOR_GNSS = 0xFF2F80ED.toInt()   // blue  - ground truth
-val COLOR_DR = 0xFFF2A93B.toInt()     // amber - dead reckoning
-val COLOR_SNAP = 0xFF35D07F.toInt()   // green - Viterbi snapped
+val COLOR_GNSS = 0xFF2F80ED.toInt()   // blue  - live GNSS fix
+val COLOR_SNAP = 0xFF35D07F.toInt()   // green - Viterbi snapped, GNSS-out only
 
 /**
  * osmdroid rotates markers counter-clockwise, so a compass bearing needs
@@ -53,13 +52,17 @@ private val STADIA_STYLE = object : OnlineTileSourceBase(
 }
 
 /**
- * Three independent arrows:
- *   blue  = raw GNSS fix (ground truth)
- *   amber = dead-reckoning estimate
- *   green = Viterbi road-snapped position (only during GNSS outage)
+ * Exactly one arrow is ever visible:
+ *   - GNSS is fresh  -> blue arrow at the live fix. Nothing else drawn.
+ *   - GNSS is stale/off -> green arrow at the Viterbi-snapped DR position,
+ *     if the matcher currently has a road lock. Nothing else drawn.
  *
- * The map pans and zooms freely. It follows the track until you touch it,
- * then leaves you alone until [recenterTick] changes.
+ * The dead-reckoning engine keeps running underneath regardless (it has to,
+ * so it's ready the instant GNSS drops) but its raw, unsnapped position is
+ * never rendered — only ever the GNSS truth or the corrected snap.
+ *
+ * The map pans and zooms freely. It follows the active arrow until you touch
+ * it, then leaves the camera alone until [recenterTick] changes.
  */
 @SuppressLint("ClickableViewAccessibility")
 @Composable
@@ -71,7 +74,6 @@ fun OsmMapView(
 ) {
     val context = LocalContext.current
 
-    /** Follow the track until the user drags, then hand them control. */
     val follow = remember { booleanArrayOf(true) }
     val lastTick = remember { intArrayOf(-1) }
     val lastIconPx = remember { intArrayOf(-1) }
@@ -85,8 +87,6 @@ fun OsmMapView(
             minZoomLevel = 3.0
             maxZoomLevel = 20.0
             controller.setZoom(18.0)
-            // Any touch means the user wants to look somewhere else.
-            // Returning false leaves normal gesture handling intact.
             setOnTouchListener { _, _ ->
                 follow[0] = false
                 false
@@ -95,20 +95,16 @@ fun OsmMapView(
     }
 
     val gnssMarker = remember { plainMarker(mapView, "GNSS") }
-    val drMarker = remember { plainMarker(mapView, "Dead reckoning") }
-    val snapMarker = remember { plainMarker(mapView, "Snapped to road") }
+    val snapMarker = remember { plainMarker(mapView, "Viterbi snapped") }
 
-    val gnssTrail = remember { trail(COLOR_GNSS, 4f) }
-    val drTrail = remember { trail(COLOR_DR, 6f) }
+    val gnssTrail = remember { trail(COLOR_GNSS, 6f) }
     val snapTrail = remember { trail(COLOR_SNAP, 6f) }
 
     DisposableEffect(Unit) {
         mapView.onResume()
         mapView.overlays.add(gnssTrail)
-        mapView.overlays.add(drTrail)
         mapView.overlays.add(snapTrail)
         mapView.overlays.add(gnssMarker)
-        mapView.overlays.add(drMarker)
         mapView.overlays.add(snapMarker)
         onDispose {
             mapView.onPause()
@@ -121,79 +117,58 @@ fun OsmMapView(
         modifier = modifier,
         update = { map ->
 
-            // ---- resize the arrows to match the current zoom ----
-        val px = 140
+            // ---- resize the arrow to match the current zoom ----
+            val px = arrowPxForZoom(map.zoomLevelDouble)
+            if (px != lastIconPx[0]) {
+                lastIconPx[0] = px
+                gnssMarker.icon = arrowDrawable(COLOR_GNSS, px)
+                snapMarker.icon = arrowDrawable(COLOR_SNAP, px)
+            }
 
-if (px != lastIconPx[0]) {
-    lastIconPx[0] = px
-    gnssMarker.icon = arrowDrawable(COLOR_GNSS, px)
-    drMarker.icon = arrowDrawable(COLOR_DR, px)
-    snapMarker.icon = arrowDrawable(COLOR_SNAP, px)
-}
+            val gnssFresh = drState?.gnssFresh == true
+            var activePoint: GeoPoint? = null
 
-            // ---- GNSS ----
-            var gnssPoint: GeoPoint? = null
-            currentLocation?.let {
-                val p = GeoPoint(it.latitude, it.longitude)
-                gnssPoint = p
+            // ---- GNSS fresh: show blue, only blue ----
+            if (gnssFresh && currentLocation != null) {
+                val p = GeoPoint(currentLocation.latitude, currentLocation.longitude)
+                activePoint = p
+
+                // A parked phone reports bearing 0, which would swing the
+                // arrow to north for no reason. Only believe it while moving.
+                if (currentLocation.speed > 0.5f) lastGnssBearing[0] = currentLocation.heading
+
                 gnssMarker.position = p
-                // A parked phone reports bearing 0, which would swing the arrow
-                // to north for no reason. Only believe it while actually moving.
-                if (it.speed > 0.5f) lastGnssBearing[0] = it.heading
                 gnssMarker.rotation = ROTATION_SIGN * lastGnssBearing[0]
                 gnssMarker.isEnabled = true
                 addTrailPoint(gnssTrail, p)
+
+                snapMarker.isEnabled = false
             }
+            // ---- GNSS stale/off: show green, only if Viterbi has a lock ----
+            else if (!gnssFresh && drState != null && drState.snapped) {
+                val p = GeoPoint(drState.snappedLat, drState.snappedLon)
+                activePoint = p
 
-            
-            // ---- dead reckoning prediction ----
-// Show orange ONLY while GNSS is healthy.
-var drPoint: GeoPoint? = null
+                snapMarker.position = p
+                snapMarker.rotation = ROTATION_SIGN * drState.heading
+                snapMarker.isEnabled = true
+                addTrailPoint(snapTrail, p)
 
-if (drState != null &&
-    drState.anchored &&
-    drState.gnssFresh
-) {
-    val p = GeoPoint(drState.latitude, drState.longitude)
-    drPoint = p
-
-    drMarker.position = p
-    drMarker.rotation = ROTATION_SIGN * drState.heading
-    drMarker.isEnabled = true
-
-    addTrailPoint(drTrail, p)
-} else {
-    drMarker.isEnabled = false
-}
-
-          // ---- Viterbi snapped ----
-// Show green ONLY while GNSS is unavailable.
-if (drState != null &&
-    !drState.gnssFresh &&
-    drState.snapped
-) {
-    val p = GeoPoint(
-        drState.snappedLat,
-        drState.snappedLon
-    )
-
-    snapMarker.position = p
-    snapMarker.rotation = ROTATION_SIGN * drState.heading
-    snapMarker.isEnabled = true
-
-    addTrailPoint(snapTrail, p)
-} else {
-    snapMarker.isEnabled = false
-}
-
+                gnssMarker.isEnabled = false
+            }
+            // ---- neither available: draw nothing ----
+            else {
+                gnssMarker.isEnabled = false
+                snapMarker.isEnabled = false
+            }
 
             // ---- camera ----
             if (recenterTick != lastTick[0]) {
                 lastTick[0] = recenterTick
                 follow[0] = true
-                (gnssPoint ?: drPoint)?.let { map.controller.animateTo(it) }
+                activePoint?.let { map.controller.animateTo(it) }
             } else if (follow[0]) {
-                (drPoint ?: gnssPoint)?.let { map.controller.setCenter(it) }
+                activePoint?.let { map.controller.setCenter(it) }
             }
 
             map.invalidate()
@@ -226,13 +201,13 @@ private fun addTrailPoint(line: Polyline, p: GeoPoint) {
 }
 
 /**
- * Arrow size in pixels for a zoom level: 36 px at z18, doubling every three
+ * Arrow size in pixels for a zoom level: 40 px at z18, doubling every three
  * levels, clamped so it never vanishes or swallows the screen. Quantised to
  * 4 px steps so we regenerate bitmaps on real zoom changes, not every frame.
  */
 private fun arrowPxForZoom(zoom: Double): Int {
-    val raw = 76.0 * 2.0.pow((zoom - 18.0) / 3.0)
-    val clamped = raw.coerceIn(56.0, 144.0)
+    val raw = 120.0 * 2.0.pow((zoom - 18.0) / 3.0)
+    val clamped = raw.coerceIn(150.0, 400.0)
     return ((clamped / 4.0).toInt()) * 4
 }
 
