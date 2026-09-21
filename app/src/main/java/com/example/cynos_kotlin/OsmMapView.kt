@@ -186,6 +186,7 @@ if (drState != null &&
     snapMarker.isEnabled = false
 }
 
+
             // ---- camera ----
             if (recenterTick != lastTick[0]) {
                 lastTick[0] = recenterTick
