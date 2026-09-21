@@ -208,6 +208,8 @@ class SensorViewModel(
     private val vrSeqTensor = Array(1) { Array(10) { FloatArray(1) } }
     private val vrHistory = FloatArray(10)
     private var vrIndex = 0
+    private var arWindowStep = 0
+    private var latchedV0 = 0f
 
     private var lastGyroMs = 0L
     private var lastDvseMs = 0L
@@ -524,8 +526,6 @@ class SensorViewModel(
 
         val fresh = gnssFresh()
         applySnapPolicy(fresh)
-        vrHistory[vrIndex] = if (fresh) lastGnssSpeed else dr.velocity
-        vrIndex = (vrIndex + 1) % 10
 
         // ---- anchor from GNSS ----
         if (pendingAnchor && fresh) {
@@ -588,11 +588,22 @@ class SensorViewModel(
                     accWindow[0][i][1] = a[1]
                     accWindow[0][i][2] = a[2]
                 }
+                
+                // 10-second Autoregressive Latch Logic
+                if (arWindowStep == 0) {
+                    latchedV0 = if (fresh && gnssAidVelocity) lastGnssSpeed else dr.velocity
+                }
+                arWindowStep = (arWindowStep + 1) % 10
+                
+                // Record the last 10 predicted values
+                vrHistory[vrIndex] = dr.velocity
+                vrIndex = (vrIndex + 1) % 10
+
                 for (k in 0 until 10) {
                     vrSeqTensor[0][k][0] = vrHistory[(vrIndex + k) % 10]
                 }
 
-                val v0 = if (fresh && gnssAidVelocity) lastGnssSpeed else dr.velocity
+                val v0 = latchedV0
                 dr.setVelocity(v0)
 
                 val t0 = SystemClock.elapsedRealtime()
