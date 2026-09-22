@@ -31,6 +31,7 @@ private const val STADIA_API_KEY = "0809d2df-bb7d-43b0-a6ba-918cdaf2af80"
 /** Marker colours, shared with the legend in MainActivity. */
 val COLOR_GNSS = 0xFF2F80ED.toInt()   // blue  - live GNSS fix
 val COLOR_SNAP = 0xFF35D07F.toInt()   // green - Viterbi snapped, GNSS-out only
+val COLOR_RAW = 0xFFCB4B4B.toInt()    // red - raw DR position
 
 /**
  * osmdroid rotates markers counter-clockwise, so a compass bearing needs
@@ -96,16 +97,20 @@ fun OsmMapView(
 
     val gnssMarker = remember { plainMarker(mapView, "GNSS") }
     val snapMarker = remember { plainMarker(mapView, "Viterbi snapped") }
+    val rawMarker = remember { plainMarker(mapView, "Raw DR") }
 
     val gnssTrail = remember { trail(COLOR_GNSS, 6f) }
     val snapTrail = remember { trail(COLOR_SNAP, 6f) }
+    val rawTrail = remember { trail(COLOR_RAW, 6f) }
 
     DisposableEffect(Unit) {
         mapView.onResume()
         mapView.overlays.add(gnssTrail)
         mapView.overlays.add(snapTrail)
+        mapView.overlays.add(rawTrail)
         mapView.overlays.add(gnssMarker)
         mapView.overlays.add(snapMarker)
+        mapView.overlays.add(rawMarker)
         onDispose {
             mapView.onPause()
             mapView.onDetach()
@@ -123,6 +128,7 @@ fun OsmMapView(
                 lastIconPx[0] = px
                 gnssMarker.icon = arrowDrawable(COLOR_GNSS, px)
                 snapMarker.icon = arrowDrawable(COLOR_SNAP, px)
+                rawMarker.icon = arrowDrawable(COLOR_RAW, px)
             }
 
             val gnssFresh = drState?.gnssFresh == true
@@ -143,23 +149,48 @@ fun OsmMapView(
                 addTrailPoint(gnssTrail, p)
 
                 snapMarker.isEnabled = false
+                rawMarker.isEnabled = false
             }
-            // ---- GNSS stale/off: show green, only if Viterbi has a lock ----
-            else if (!gnssFresh && drState != null && drState.snapped) {
-                val p = GeoPoint(drState.snappedLat, drState.snappedLon)
-                activePoint = p
+            // ---- GNSS stale/off (Blackout): show all 3 arrows ----
+            else if (!gnssFresh && drState != null) {
+                // 1. GNSS Marker (Stale/drifting)
+                if (currentLocation != null) {
+                    val pGnss = GeoPoint(currentLocation.latitude, currentLocation.longitude)
+                    if (currentLocation.speed > 0.5f) lastGnssBearing[0] = currentLocation.heading
+                    gnssMarker.position = pGnss
+                    gnssMarker.rotation = ROTATION_SIGN * lastGnssBearing[0]
+                    gnssMarker.isEnabled = true
+                    addTrailPoint(gnssTrail, pGnss)
+                } else {
+                    gnssMarker.isEnabled = false
+                }
 
-                snapMarker.position = p
-                snapMarker.rotation = ROTATION_SIGN * drState.heading
-                snapMarker.isEnabled = true
-                addTrailPoint(snapTrail, p)
+                // 2. Raw DR Marker
+                val pRaw = GeoPoint(drState.latitude, drState.longitude)
+                rawMarker.position = pRaw
+                rawMarker.rotation = ROTATION_SIGN * drState.heading
+                rawMarker.isEnabled = true
+                addTrailPoint(rawTrail, pRaw)
+                
+                activePoint = pRaw // Default active point if not snapped
 
-                gnssMarker.isEnabled = false
+                // 3. Viterbi Snapped Marker
+                if (drState.snapped) {
+                    val pSnap = GeoPoint(drState.snappedLat, drState.snappedLon)
+                    snapMarker.position = pSnap
+                    snapMarker.rotation = ROTATION_SIGN * drState.heading
+                    snapMarker.isEnabled = true
+                    addTrailPoint(snapTrail, pSnap)
+                    activePoint = pSnap
+                } else {
+                    snapMarker.isEnabled = false
+                }
             }
             // ---- neither available: draw nothing ----
             else {
                 gnssMarker.isEnabled = false
                 snapMarker.isEnabled = false
+                rawMarker.isEnabled = false
             }
 
             // ---- camera ----
